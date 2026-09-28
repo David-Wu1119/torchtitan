@@ -5,10 +5,11 @@
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import torch
 from spmd_types import SpmdType
+from torch.nn.attention.flex_attention import BlockMask
 
 from torchtitan.config import TORCH_DTYPE_MAP, TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
@@ -17,7 +18,6 @@ from torchtitan.distributed.spmd_types import annotate_input_spmd_types
 from torchtitan.models.common.attention import (
     AttentionMetadata,
     BaseAttention,
-    FlexAttentionMetadata,
     InnerAttention,
     VarlenAttentionMetadata,
 )
@@ -47,6 +47,8 @@ class TransformerBlock(Module):
 
     Children implement ``__init__`` and ``forward``.
     """
+
+    attention: BaseAttention
 
     @dataclass(kw_only=True, slots=True)
     class Config(Module.Config):
@@ -255,7 +257,9 @@ class Decoder(BaseModel):
             layer_attention_metadata = (
                 None
                 if attention_metadata is None
-                else attention_metadata.get(type(layer.attention.inner_attention))
+                else attention_metadata.get(
+                    type(cast(TransformerBlock, layer).attention.inner_attention)
+                )
             )
             h = layer(
                 h,
@@ -326,7 +330,10 @@ class Decoder(BaseModel):
     ) -> dict[str, Any]:
         """Prepare attention metadata and shard model inputs for CP."""
         from torchtitan.distributed import context_parallel
-        from torchtitan.models.common.cp_attention import CPInnerAttention
+        from torchtitan.models.common.cp_attention import (
+            canonicalize_cp_attention_backend,
+            CPInnerAttention,
+        )
 
         cp_attention_backends: list[type[CPInnerAttention[Any, Any]]] = []
         for _, config, _, _ in self.config.traverse(CPInnerAttention.Config):
@@ -338,9 +345,23 @@ class Decoder(BaseModel):
         load_balancer_config = parallelism.context_parallel_load_balancer
         selected_attention_metadata = None
         if load_balancer_config is not None and attention_metadata is not None:
-            selected_attention_metadata = attention_metadata.get(
-                cp_attention_backends[0]
+            first_attention = self.config.first_attention
+            assert first_attention is not None
+            first_attention_backend = first_attention.inner_attention._owner
+            assert first_attention_backend is not None and issubclass(
+                first_attention_backend, CPInnerAttention
             )
+            # One permutation is shared across layers. Prefer full-attention
+            # metadata, falling back to the first quadratic-attention backend
+            # for models containing only sliding-window attention.
+            full_attention_backend = canonicalize_cp_attention_backend(
+                first_attention_backend
+            )
+            selected_attention_metadata = attention_metadata.get(full_attention_backend)
+            if selected_attention_metadata is None:
+                selected_attention_metadata = attention_metadata.get(
+                    first_attention_backend
+                )
         load_balancer = (
             load_balancer_config.build(
                 seq_len=context_parallel.get_cp_input_seq_len(
@@ -379,22 +400,23 @@ class Decoder(BaseModel):
         max_context_length: int | None = None,
     ) -> AttentionMetadata:
         attention_metadata: dict[
-            type[InnerAttention], FlexAttentionMetadata | VarlenAttentionMetadata
+            type[InnerAttention], BlockMask | VarlenAttentionMetadata
         ] = {}
-        for _, config, _, _ in self.config.traverse(
-            InnerAttention.Config, recurse=True
-        ):
-            backend = config._owner
-            assert backend is not None and issubclass(backend, InnerAttention)
-            if backend in attention_metadata:
-                continue
-            metadata = backend.build_attention_metadata(
-                positions,
-                config=config,
-                padding_mask=padding_mask,
-                max_num_documents=max_num_documents,
-                max_context_length=max_context_length,
-            )
-            if metadata is not None:
-                attention_metadata[backend] = metadata
+        for layer_config in self.config.layers:
+            for _, config, _, _ in layer_config.traverse(
+                InnerAttention.Config, recurse=True
+            ):
+                backend = config._owner
+                assert backend is not None and issubclass(backend, InnerAttention)
+                if backend in attention_metadata:
+                    continue
+                metadata = backend.build_attention_metadata(
+                    positions,
+                    config=config,
+                    padding_mask=padding_mask,
+                    max_num_documents=max_num_documents,
+                    max_context_length=max_context_length,
+                )
+                if metadata is not None:
+                    attention_metadata[backend] = metadata
         return attention_metadata
