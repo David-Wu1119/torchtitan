@@ -170,8 +170,13 @@ model kwargs or require a custom pipeline-stage subclass.
 The annex represents each physical slot with an immutable device-scalar view.
 Non-strict FX tracing and whole-step CUDA-graph capture can therefore bind a
 fixed view to each scheduled Dist-MoE call without copying or reading a GPU
-scalar on the host. GraphPP specializes a stage graph by the runtime forward
-context key. For Dist-MoE, that key is the assigned activation-slot ID and the
+scalar on the host. TorchTitan registers one composed ``PipelineStageInfo``
+context on each pipeline stage. Eager execution and metadata inference use the
+upstream stage path; GraphPP reuses the same registration while tracing and
+around overridden forward actions. No second registry or Dist-MoE-specific
+stage subclass is required.
+
+For Dist-MoE, the context cache key is the assigned activation-slot ID and the
 number of MoE layers using the slot. Microbatches with the same key share one
 graph; different keys receive separate graph variants whose traces bind the
 corresponding immutable annex view. The overlapped forward/backward GraphPP
