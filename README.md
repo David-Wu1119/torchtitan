@@ -71,7 +71,7 @@ We look forward to your contributions!
    - [Interoperable checkpoints](docs/checkpoint.md) which can be loaded directly into [`torchtune`](https://github.com/pytorch/torchtune) for fine-tuning
 5. `torch.compile` support
 6. [Low-precision training](torchtitan/quantization/README.md) with [Float8](torchtitan/quantization/float8/README.md), [MXFP8](torchtitan/quantization/mxfp8/README.md), and [NVFP4](torchtitan/quantization/nvfp4/README.md)
-7. [Distributed MoE](torchtitan/components/dist_moe/README.md) with fused CuTe DSL dispatch, expert compute, and combine on Blackwell GPUs
+7. [Distributed MoE](torchtitan/models/common/DIST_MOE.md) with fused CuTe DSL dispatch, expert compute, and combine on Blackwell GPUs
 8. Supervised Fine-Tuning (SFT) with chat-formatted datasets
 9. DDP and HSDP
 10. [TorchFT](https://github.com/pytorch/torchft) integration

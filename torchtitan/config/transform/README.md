@@ -124,6 +124,13 @@ Use `run_after` to set the order. Use `conflicts_with` to reject incompatible
 transforms. `apply_transforms` checks conflicts and sorts transforms before
 running them.
 
+A transform that requires rank-level state may override `runtime_configs()`.
+`apply_transforms` copies those configs into the trainer's suppressed runtime
+list. The training engine builds them after model parallelization, initializes
+them after model state materialization, composes their eager pipeline forward
+contexts, and closes them in reverse order. Model transforms should use this
+lifecycle instead of adding backend-specific setup and teardown to the trainer.
+
 ## Validation
 
 See [Configuration validation](../README.md#validation) for where validation
