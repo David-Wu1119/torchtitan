@@ -87,7 +87,7 @@ Per-layer settings belong to the transform:
 
 | Setting | Meaning |
 | --- | --- |
-| `inplace_wgrad_accum` | Let annex WGRAD kernels accumulate into the owning unsharded parameter-gradient destination. Enable only when that destination has a stable compatible lifetime. |
+| `inplace_wgrad_accum` | Let annex WGRAD kernels accumulate into an existing standard `parameter.grad` buffer. The annex derives ownership from each logical weight. Enable it only when the integration keeps that gradient storage stable across serialized backward calls. |
 | `bf16_grouped_gemm_preset` | Optional BF16 FPROP/DGRAD schedule override for expert users. `None` uses the annex's shape-aware production defaults. BF16 WGRAD has its own production schedule. |
 | `block_scaled_config` | MXFP8-only annex policy. `pipeline="staged"` uses separate expert kernels; `pipeline="mega"` uses the fused chunk-pipelined implementation. `fast_math` selects approximate fused-SwiGLU sigmoid math, and `kernel_config` is an expert-only CuTe tuning override. |
 
@@ -177,12 +177,13 @@ graph; different keys receive separate graph variants whose traces bind the
 corresponding immutable annex view. The overlapped forward/backward GraphPP
 action currently requires a single forward-context variant per stage.
 
-PP GraphPP currently keeps gradient accumulation outside the stage graphs.
-Consequently, Dist-MoE uses functional WGrad outputs rather than its eager-only
-`inplace_wgrad_accum` path. Kernel-fused accumulation requires the registered
-backward operation to expose explicit destination tensors and a graph pass to
-bind persistent accumulators; it is a performance follow-up, not a correctness
-requirement for activation-slot specialization.
+The annex's functional and accumulating backward operations are both visible to
+non-strict FX tracing. PP GraphPP currently keeps gradient accumulation outside
+the stage graphs, so its integration recipes trace functional Dist-MoE WGRAD
+outputs. A future GraphTrainer fusion rule can replace those outputs and their
+accumulation sinks with the annex's explicit mutating backward operation. That
+is a performance follow-up, not a correctness requirement for activation-slot
+specialization.
 
 ## VMM Overflow Scratch
 
