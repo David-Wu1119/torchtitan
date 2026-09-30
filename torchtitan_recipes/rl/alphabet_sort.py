@@ -150,7 +150,6 @@ def rl_grpo_qwen3_0_6b_varlen(*, seq_len: int = 2048) -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
         ),
@@ -233,7 +232,6 @@ def rl_grpo_qwen3_0_6b_flex() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=100,
             ),
         ),
@@ -351,7 +349,6 @@ def rl_grpo_gpt_oss_20b_varlen() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
         ),
@@ -419,7 +416,6 @@ def rl_grpo_gpt_oss_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=50,
             ),
         ),
@@ -518,7 +514,6 @@ def rl_grpo_gpt_oss_debug_varlen_batch_invariant() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=50,
             ),
             debug=batch_invariant_config,
@@ -586,7 +581,6 @@ def rl_grpo_qwen3_1_7b() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
         ),
@@ -653,7 +647,6 @@ def rl_grpo_qwen3_14b() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
         ),
@@ -729,7 +722,6 @@ def rl_grpo_qwen3_moe_debug_varlen() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=1.0,
-                top_p=0.95,
                 max_tokens=50,
             ),
         ),
@@ -883,7 +875,6 @@ def rl_grpo_qwen3_moe_debug_varlen_batch_invariant(
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=1.0,
-                top_p=0.95,
                 max_tokens=50,
             ),
             debug=_BATCH_INVARIANT_DEBUG,
@@ -959,7 +950,6 @@ def rl_grpo_qwen3_30b_a3b_varlen() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
         ),
@@ -1074,7 +1064,6 @@ def rl_grpo_qwen3_0_6b_varlen_batch_invariant(
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
             debug=batch_invariant_config,
@@ -1175,7 +1164,6 @@ def rl_grpo_qwen3_5_9b_varlen() -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=700,
             ),
         ),
@@ -1270,7 +1258,6 @@ def rl_grpo_qwen3_5_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
             checkpointer=None,
             sampling=SamplingConfig(
                 temperature=0.8,
-                top_p=0.95,
                 max_tokens=256,
             ),
         ),
