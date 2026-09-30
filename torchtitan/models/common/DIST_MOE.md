@@ -164,31 +164,25 @@ recomputation up to the planner's logged maximum useful per-slot budget.
 
 PyTorch calls each eager pipeline stage's registered forward context with its
 stage and microbatch indices. `DistMoeRuntime` uses the precomputed assignment
-to select the annex activation slot before model execution. This does not add
-model kwargs or require a custom pipeline-stage subclass.
+to select the annex activation slot before model execution. Every slot is
+planned for `max_moe_layers_per_activation_slot`, so only the slot ID varies.
+This does not add model kwargs or require a custom pipeline-stage subclass.
 
-The annex represents each physical slot with an immutable device-scalar view.
-Non-strict FX tracing and whole-step CUDA-graph capture can therefore bind a
-fixed view to each scheduled Dist-MoE call without copying or reading a GPU
-scalar on the host. TorchTitan registers one composed ``PipelineStageInfo``
-context on each pipeline stage. Eager execution and metadata inference use the
-upstream stage path; GraphPP reuses the same registration while tracing and
-around overridden forward actions. No second registry or Dist-MoE-specific
-stage subclass is required.
-
-For Dist-MoE, the context cache key is the assigned activation-slot ID and the
-number of MoE layers using the slot. Microbatches with the same key share one
-graph; different keys receive separate graph variants whose traces bind the
-corresponding immutable annex view. The overlapped forward/backward GraphPP
-action currently requires a single forward-context variant per stage.
+GraphPP does not use the eager context. After non-strict tracing flattens module
+boundaries, TorchTitan replaces every Dist-MoE forward's captured slot view
+with one `activation_slot_id_1` graph input. The schedule action resolves its
+precomputed physical slot and passes the corresponding immutable device-scalar
+view. Forward-to-backward partitioning saves that same tensor for the matching
+backward graph. This produces one graph per stage without model kwargs,
+per-microbatch graph variants, or a device-side indexing operation.
 
 The annex's functional and accumulating backward operations are both visible to
 non-strict FX tracing. PP GraphPP currently keeps gradient accumulation outside
 the stage graphs, so its integration recipes trace functional Dist-MoE WGRAD
 outputs. A future GraphTrainer fusion rule can replace those outputs and their
 accumulation sinks with the annex's explicit mutating backward operation. That
-is a performance follow-up, not a correctness requirement for activation-slot
-specialization.
+is a performance follow-up, not a correctness requirement for activation slot
+selection.
 
 ## VMM Overflow Scratch
 
