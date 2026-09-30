@@ -450,8 +450,8 @@ class DistMoeRoutedExperts(RoutedExperts):
             """Validate the source-module contract required by Dist-MoE."""
             RoutedExperts.Config.__post_init__(self)
             if (
-                type(self.w13) is not GroupedLinear.Config
-                or type(self.w2) is not GroupedLinear.Config
+                self.w13._owner is not GroupedLinear
+                or self.w2._owner is not GroupedLinear
                 or type(self.activation_fn) is not SwiGLU.Config
             ):
                 raise TypeError(
