@@ -222,6 +222,9 @@ class TorchTitanVarlenInnerAttentionImpl(FlashAttentionImpl):
         # num_splits=1 in batch-invariant mode (determinism).
         if fa_impl in (None, "FA2") or is_in_batch_invariant_mode():
             extra_kwargs["num_splits"] = 1
+        elif fa_impl == "FA4":
+            # FA4 picks the split count for num_splits < 1.
+            extra_kwargs["num_splits"] = -1
 
         if self.enable_gqa:
             extra_kwargs["enable_gqa"] = True
