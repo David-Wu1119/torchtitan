@@ -34,8 +34,9 @@ class ModelConfigTransformContext:
 class ModelConfigTransform(ABC):
     """A feature that rewrites a completed model config tree.
 
-    ``run_after`` declares ordering. ``conflicts_with`` declares incompatible
-    transforms. Validation belongs in ``Trainer.Config.__post_init__``.
+    External transforms may use ``run_after`` and ``conflicts_with`` to declare
+    composition policy. Built-in transform relations live in ``relations.py``.
+    Validation belongs in ``Trainer.Config.__post_init__``.
     """
 
     run_after: ClassVar[tuple[type["ModelConfigTransform"], ...]] = ()

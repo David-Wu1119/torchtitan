@@ -7,10 +7,15 @@
 """Model config transforms."""
 
 import copy
+import importlib
+import inspect
+import pkgutil
 import unittest
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import torchtitan.config.transform as transform_api
+import torchtitan.config.transform.relations as transform_relations
 from torchtitan.config import ParallelismConfig, TrainingConfig
 from torchtitan.config.transform import (
     apply_transforms,
@@ -127,34 +132,114 @@ class TestConvertConfigType(unittest.TestCase):
 class TestOrdering(unittest.TestCase):
     def setUp(self):
         _Record.order = []
+        self.config = _llama3_cp_ready()
+        self.config.parallelism.context_parallel_degree = 1
+
+    def test_builtin_relations_use_public_transform_classes(self):
+        self.assertIn(
+            (ContextParallelTransform, LoRATransform),
+            transform_relations.PRECEDES,
+        )
+        self.assertIn(
+            (AsyncTensorParallelTransform, LoRATransform),
+            transform_relations.CONFLICTS,
+        )
+        self.assertIn((LoRATransform, LoRATransform), transform_relations.CONFLICTS)
 
     def test_run_after_decides_the_order_not_the_list(self):
-        config = _llama3_cp_ready()
-        config.parallelism.context_parallel_degree = 1
-        apply_transforms(config, [_Third(), _First(), _Second()])
+        apply_transforms(self.config, [_Third(), _First(), _Second()])
         self.assertEqual(_Record.order, ["_First", "_Second", "_Third"])
 
     def test_unrelated_transforms_keep_the_declared_order(self):
-        config = _llama3_cp_ready()
-        config.parallelism.context_parallel_degree = 1
-        apply_transforms(config, [_First(), _Loose()])
+        apply_transforms(self.config, [_First(), _Loose()])
         self.assertEqual(_Record.order, ["_First", "_Loose"])
 
-    def test_rejects_a_declared_conflict(self):
-        config = _llama3_cp_ready()
-        config.parallelism.context_parallel_degree = 1
-        with self.assertRaisesRegex(ValueError, "cannot be combined"):
-            apply_transforms(config, [_First(), _Rival()])
+    def test_central_precedence_orders_selected_transforms(self):
+        with patch.object(transform_relations, "PRECEDES", ((_First, _Loose),)):
+            apply_transforms(self.config, [_Loose(), _First()])
 
-    def test_rejects_the_same_self_conflicting_instance_twice(self):
-        config = _llama3_cp_ready()
-        config.parallelism.context_parallel_degree = 1
-        transform = _SelfConflicting()
+        self.assertEqual(_Record.order, ["_First", "_Loose"])
 
-        with self.assertRaisesRegex(ValueError, "cannot be combined"):
-            apply_transforms(config, [transform, transform])
+    def test_central_and_local_ordering_are_additive(self):
+        with patch.object(transform_relations, "PRECEDES", ((_Loose, _Second),)):
+            apply_transforms(self.config, [_Third(), _Second(), _First(), _Loose()])
+
+        self.assertEqual(_Record.order, ["_First", "_Loose", "_Second", "_Third"])
+
+    def test_global_cycle_allows_an_acyclic_selected_subset(self):
+        cycle = (
+            (_Loose, _First),
+            (_Rival, _Loose),
+            (_First, _Rival),
+        )
+        with patch.object(transform_relations, "PRECEDES", cycle):
+            apply_transforms(self.config, [_First(), _Loose()])
+
+        self.assertEqual(_Record.order, ["_Loose", "_First"])
+
+    def test_mixed_cycle_is_rejected_before_any_transform_runs(self):
+        with (
+            patch.object(transform_relations, "PRECEDES", ((_Third, _First),)),
+            self.assertRaisesRegex(ValueError, "unresolved"),
+        ):
+            apply_transforms(self.config, [_Loose(), _First(), _Second(), _Third()])
 
         self.assertEqual(_Record.order, [])
+
+    def test_central_ordering_applies_to_subclasses(self):
+        class _FirstSubclass(_First):
+            run_after = ()
+
+        with patch.object(transform_relations, "PRECEDES", ((_Loose, _First),)):
+            apply_transforms(self.config, [_FirstSubclass(), _Loose()])
+
+        self.assertEqual(_Record.order, ["_Loose", _FirstSubclass.__qualname__])
+
+    def test_rejects_a_declared_conflict_in_either_order(self):
+        for selected in ([_First(), _Rival()], [_Rival(), _First()]):
+            with self.subTest(selected=[type(t).__qualname__ for t in selected]):
+                with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                    apply_transforms(self.config, selected)
+
+    def test_rejects_the_same_self_conflicting_instance_twice(self):
+        transform = _SelfConflicting()
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            apply_transforms(self.config, [transform, transform])
+
+    def test_central_conflict_is_symmetric(self):
+        relation = ((_First, _Loose),)
+        for selected in ([_First(), _Loose()], [_Loose(), _First()]):
+            with self.subTest(selected=[type(t).__qualname__ for t in selected]):
+                with (
+                    patch.object(transform_relations, "CONFLICTS", relation),
+                    self.assertRaisesRegex(ValueError, "cannot be combined"),
+                ):
+                    apply_transforms(self.config, selected)
+
+    def test_builtin_transforms_keep_relations_in_the_central_module(self):
+        modules = [transform_api]
+        modules.extend(
+            importlib.import_module(module_info.name)
+            for module_info in pkgutil.walk_packages(
+                transform_api.__path__, transform_api.__name__ + "."
+            )
+        )
+
+        builtin_transforms = {
+            cls
+            for module in modules
+            for _, cls in inspect.getmembers(module, inspect.isclass)
+            if cls.__module__ == module.__name__
+            and issubclass(cls, ModelConfigTransform)
+            and cls is not ModelConfigTransform
+            and not inspect.isabstract(cls)
+        }
+
+        self.assertTrue(builtin_transforms)
+        for transform_cls in builtin_transforms:
+            with self.subTest(transform=transform_cls.__qualname__):
+                self.assertNotIn("run_after", transform_cls.__dict__)
+                self.assertNotIn("conflicts_with", transform_cls.__dict__)
 
 
 class TestAtomicApplication(unittest.TestCase):

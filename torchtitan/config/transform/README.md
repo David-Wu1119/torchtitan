@@ -112,12 +112,38 @@ Implement `transform`, rewrite configs in place, and return the model root. Retu
 a different config only when replacing the root.
 
 ```python
+from dataclasses import dataclass
+
+from torchtitan.config.transform import (
+    ModelConfigTransform,
+    ModelConfigTransformContext,
+)
+from torchtitan.protocols.module import Module
+
+
+class ExternalPrerequisiteTransform(ModelConfigTransform):
+    def transform(
+        self,
+        model: Module.Config,
+        *,
+        context: ModelConfigTransformContext | None = None,
+    ) -> Module.Config:
+        del context
+        return model
+
+
 @dataclass(kw_only=True, slots=True)
 class MyTransform(ModelConfigTransform):
-    run_after = (QuantizationTransform,)
+    run_after = (ExternalPrerequisiteTransform,)
     setting: int
 
-    def transform(self, model: Module.Config) -> Module.Config:
+    def transform(
+        self,
+        model: Module.Config,
+        *,
+        context: ModelConfigTransformContext | None = None,
+    ) -> Module.Config:
+        del context
         ...
         return model
 ```
@@ -132,6 +158,31 @@ fields and wrappers from earlier transforms.
 Use `run_after` to set the order. Use `conflicts_with` to reject incompatible
 transforms. `apply_transforms` checks conflicts and sorts transforms before
 running them.
+
+## Central relation policy
+
+Built-in `PRECEDES` and `CONFLICTS` pairs live in `relations.py`. Each
+`PRECEDES` pair is `(prerequisite, dependent)`. `CONFLICTS` pairs are
+unordered.
+
+The complete central ordering relation may contain cycles. Only the relation
+induced by one selected transform list must be resolvable.
+Ordering selects the earliest currently ready entry in the caller-provided
+list. Conflict and ordering validation complete before any transform is
+invoked.
+
+Central and class-local policy are additive and subclass-aware. A subclass
+cannot clear an applicable central built-in constraint by declaring an empty
+class-local tuple.
+
+When adding a transform to `torchtitan.config.transform`, put its composition
+policy in `relations.py`. Downstream transforms defined outside this package
+should use class-local `run_after` and `conflicts_with` declarations instead;
+downstream users should not modify an installed `relations.py`.
+
+A class-local `run_after` declaration can only make the declaring transform
+depend on another transform. It cannot make another transform depend on the
+declaring transform.
 
 ## Validation
 

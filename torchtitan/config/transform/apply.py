@@ -15,6 +15,7 @@ from torchtitan.config.configurable import Configurable
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.protocols.module import Module
 
+from . import relations
 from .base import ModelConfigTransform, ModelConfigTransformContext
 
 __all__ = ["apply_transforms", "transform_model_config_"]
@@ -32,6 +33,18 @@ class _TransformableConfig(Protocol):
 _ConfigT = TypeVar("_ConfigT", bound=Configurable.Config)
 
 
+def _runs_after(
+    candidate: ModelConfigTransform,
+    other: ModelConfigTransform,
+) -> bool:
+    if isinstance(other, candidate.run_after):
+        return True
+    return any(
+        isinstance(candidate, dependent) and isinstance(other, prerequisite)
+        for prerequisite, dependent in relations.PRECEDES
+    )
+
+
 def _ordered(
     transforms: list[ModelConfigTransform],
 ) -> list[ModelConfigTransform]:
@@ -46,24 +59,40 @@ def _ordered(
             blockers = [
                 other
                 for other in remaining
-                if other is not candidate
-                and isinstance(other, tuple(candidate.run_after) or ())
+                if other is not candidate and _runs_after(candidate, other)
             ]
             if not blockers:
                 ordered.append(remaining.pop(i))
                 break
         else:
-            cycle = ", ".join(type(t).__qualname__ for t in remaining)
-            raise ValueError(f"run_after declarations form a cycle: {cycle}.")
+            unresolved = ", ".join(type(t).__qualname__ for t in remaining)
+            raise ValueError(f"Could not order unresolved transforms: {unresolved}.")
     return ordered
+
+
+def _conflicts(
+    transform: ModelConfigTransform,
+    other: ModelConfigTransform,
+) -> bool:
+    if any(
+        isinstance(other, conflicting_type)
+        for conflicting_type in transform.conflicts_with
+    ) or any(
+        isinstance(transform, conflicting_type)
+        for conflicting_type in other.conflicts_with
+    ):
+        return True
+    return any(
+        (isinstance(transform, left) and isinstance(other, right))
+        or (isinstance(transform, right) and isinstance(other, left))
+        for left, right in relations.CONFLICTS
+    )
 
 
 def _reject_conflicts(transforms: list[ModelConfigTransform]) -> None:
     for i, transform in enumerate(transforms):
-        for j, other in enumerate(transforms):
-            if i == j:
-                continue
-            if isinstance(other, transform.conflicts_with):
+        for other in transforms[i + 1 :]:
+            if _conflicts(transform, other):
                 raise ValueError(
                     f"{type(transform).__qualname__} and "
                     f"{type(other).__qualname__} cannot be combined."
