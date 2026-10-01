@@ -14,6 +14,7 @@ the SamplingParams contract, and the vLLM metric timing math.
 """
 
 import asyncio
+import concurrent.futures
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -125,7 +126,8 @@ def test_process_finished_requests_resolves_future_with_completion():
     async def main():
         # DP=1: rank 0 is the single replica's leader, so it builds and resolves locally.
         dispatcher = _dispatcher()
-        future = asyncio.get_running_loop().create_future()
+        future = concurrent.futures.Future()
+        future.set_running_or_notify_cancel()  # admitted, as the engine loop leaves it
         # Admitted (sampled) under v7 (the min); a weight pull then advanced the live version to 8 (the max).
         generation_future = GenerationFuture(future=future, metrics_prefix="generator")
         generation_future.min_policy_version = 7
@@ -140,7 +142,7 @@ def test_process_finished_requests_resolves_future_with_completion():
             policy_version=8,
         )
 
-        completion = await future
+        completion = await asyncio.wrap_future(future)
         assert completion.request_id == "r0"
         assert completion.token_ids == [10, 11]
         assert completion.token_logprobs == [-0.1, -0.1]
@@ -174,7 +176,8 @@ def test_process_finished_requests_releases_dp_router_load():
     async def main():
         dispatcher = _dispatcher(dp_degree=2)
         assert dispatcher._rank0_dp_router is not None
-        future = asyncio.get_running_loop().create_future()
+        future = concurrent.futures.Future()
+        future.set_running_or_notify_cancel()  # admitted, as the engine loop leaves it
         generation_future = GenerationFuture(future=future, metrics_prefix="generator")
         generation_future.min_policy_version = 7
         dispatcher._rank0_generation_futures = {"r0": generation_future}
@@ -187,7 +190,7 @@ def test_process_finished_requests_releases_dp_router_load():
             [_request_output(request_id="r0")], policy_version=7
         )
 
-        await future
+        await asyncio.wrap_future(future)
         # Resolving the completion releases the reservation and its load.
         assert dispatcher._rank0_dp_router._reservations == {}
         assert [h.reserved_load for h in dispatcher._rank0_dp_router._handles] == [0, 0]
