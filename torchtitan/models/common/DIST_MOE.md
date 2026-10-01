@@ -12,15 +12,22 @@ not expose yet. Dist-MoE requires
 `training.mixed_precision_param="bfloat16"` because FSDP unshards its persistent
 parameters in BF16.
 
+Dist-MoE is optional. Ordinary TorchTitan imports and recipes do not import the
+package. Install `meta-pytorch/dist_moe` before selecting a Dist-MoE recipe;
+the selected recipe performs a guarded import and reports a focused error when
+the package is unavailable. TorchTitan's base requirements intentionally do
+not install this Blackwell-only backend.
+
 ## Select A Backend
 
 Choose the expert precision on one transform, and configure the rank-wide
 runtime separately on the trainer:
 
 ```python
-from torchtitan.config.transform import apply_transforms, DistMoeTransform
-from torchtitan.models.common.dist_moe import DistMoeRuntime
-from torchtitan.models.deepseek_v3.config_registry import deepseek_v3_16b
+from torchtitan.config.transform import apply_transforms
+from torchtitan.config.transform.dist_moe import DistMoeTransform
+from torchtitan.models.common.dist_moe.runtime import DistMoeRuntime
+from torchtitan_recipes.tests.models.deepseek_v3 import deepseek_v3_16b
 
 config = deepseek_v3_16b()
 config.dist_moe = DistMoeRuntime.Config(
@@ -38,9 +45,10 @@ quantization choices:
 ```python
 import dist_moe
 
-from torchtitan.config.transform import apply_transforms, DistMoeTransform
-from torchtitan.models.common.dist_moe import DistMoeRuntime
-from torchtitan.models.deepseek_v3.config_registry import deepseek_v3_16b
+from torchtitan.config.transform import apply_transforms
+from torchtitan.config.transform.dist_moe import DistMoeTransform
+from torchtitan.models.common.dist_moe.runtime import DistMoeRuntime
+from torchtitan_recipes.tests.models.deepseek_v3 import deepseek_v3_16b
 
 config = deepseek_v3_16b()
 config.dist_moe = DistMoeRuntime.Config(
@@ -61,11 +69,12 @@ config = apply_transforms(
 )
 ```
 
-DeepSeek V3 reference recipes are available for the debug, 16B, and 671B
-models with `_dist_moe_bf16` and `_dist_moe_mxfp8` suffixes. They select
-CUDA-graph-compatible varlen attention. The MXFP8 recipes also apply
-TorchTitan's existing MXFP8 linear conversion to dense projections and the
-language-model head.
+Verified 671B recipes live in `torchtitan_recipes.models.deepseek_v3`, while
+debug and 16B CI recipes live in `torchtitan_recipes.tests.models.deepseek_v3`.
+GraphTrainer follows the corresponding `graph_trainer` and
+`tests.graph_trainer` ownership. Recipes use `_dist_moe_bf16` and
+`_dist_moe_mxfp8` suffixes and select CUDA-graph-compatible varlen attention.
+MXFP8 recipes also convert dense projections and the language-model head.
 
 ## Configuration Ownership
 
@@ -101,15 +110,16 @@ Dist-MoE layer:
 | `vmm_capacity_factor` | Optional total device-plus-host scratch bound. `None` disables VMM; a value larger than `scratch_capacity_factor` provides host-backed overflow capacity. Saved activations remain in HBM. |
 | `pp_activation_slot_policy` | `"stage_microbatch"` reuses slots at stage-microbatch lifetime; `"microbatch"` retains one deeper slot across all local stages for a microbatch. The default is `"stage_microbatch"`. |
 
-The recipe assigns this config to `TrainingEngine.Config.dist_moe`. The training
-engine constructs the runtime after model parallelization and parameter
-materialization; application code should not construct `DistMoeRuntime`
-directly. Model dimensions, local token capacity, expert metadata, number of
-live activation slots, layers per slot, and kernel precision are derived from
-the materialized model and PP schedule. W13/W2 gradient output dtype follows
-`training.mixed_precision_param` because an in-place gradient must match its
-unsharded parameter. FSDP separately casts that gradient to
-`training.mixed_precision_reduce` for reduce-scatter.
+The recipe assigns this config to the optional `TrainingEngine.Config.dist_moe`
+field, whose base type is `Configurable.Config | None`. The concrete config's
+`build()` method constructs `DistMoeRuntime` only when the recipe selects it.
+Forward/backward initialization supplies materialized model parts, topology,
+schedule, and execution-mode registration to the runtime. Model dimensions,
+local token capacity, expert metadata, live slots, layers per slot, and kernel
+precision are derived rather than duplicated in the recipe. W13/W2 gradient
+output currently follows `training.mixed_precision_param`; FSDP separately
+casts it to `training.mixed_precision_reduce` for reduce-scatter. A code TODO
+tracks direct `parameter.grad_dtype` support in Annex.
 
 ## Scratch Capacity
 
@@ -192,9 +202,10 @@ VMM keeps the fast scratch prefix in HBM and maps additional pinned host pages
 into the same stable CUDA virtual range:
 
 ```python
-from torchtitan.config.transform import apply_transforms, DistMoeTransform
-from torchtitan.models.common.dist_moe import DistMoeRuntime
-from torchtitan.models.deepseek_v3.config_registry import deepseek_v3_16b
+from torchtitan.config.transform import apply_transforms
+from torchtitan.config.transform.dist_moe import DistMoeTransform
+from torchtitan.models.common.dist_moe.runtime import DistMoeRuntime
+from torchtitan_recipes.tests.models.deepseek_v3 import deepseek_v3_16b
 
 config = deepseek_v3_16b()
 config.dist_moe = DistMoeRuntime.Config(
@@ -245,22 +256,24 @@ unfused callback.
 
 ## Runtime Lifecycle
 
-TorchTitan owns one optional Dist-MoE runtime through the training engine:
+TorchTitan owns one optional Dist-MoE runtime through forward/backward setup:
 
 1. A recipe assigns `DistMoeRuntime.Config` to `TrainingEngine.Config.dist_moe`.
 2. The model transform independently replaces routed-expert modules.
-3. After model parallelization and parameter materialization, the engine builds
-   one runtime from the final model parts, expert-parallel group, and schedule.
-4. The runtime creates one annex context and attaches non-owning references to
-   every local Dist-MoE module.
-5. Eager PP registers one slot-selection context on each local stage. GraphPP
-   receives the same resolver and supplies explicit slot inputs to its graphs.
-6. Failure or normal teardown removes registrations and closes the context.
+3. At the beginning of forward/backward initialization, the standard or graph
+   engine supplies final model parts, topology, liveness schedule, and its
+   narrow forward-context registration capability.
+4. The runtime creates one annex context, derives slot assignments, installs
+   eager-stage hooks or the GraphPP resolver, retains removal ownership, and
+   attaches non-owning references to every local Dist-MoE module.
+5. GraphPP supplies the resolver's immutable slot views as explicit graph
+   inputs; eager PP enters the registered stage context.
+6. Partial initialization unwinds runtime-owned resources. Normal teardown
+   removes registrations, detaches modules, and closes the Annex context.
 
-`DistMoeRuntime` itself is not training-specific: an inference owner can build
-the same runtime from its materialized model parts, expert-parallel mesh, token
-capacity, and device with no pipeline schedule. The training engine integration
-owns that lifecycle for training recipes.
+This TorchTitan integration supports training. Annex itself supports inference,
+but TorchTitan does not yet provide an inference owner that builds and closes
+this runtime; the training PR does not imply general inference integration.
 
 The annex context owns symmetric buffers, activation storage, scratch storage,
 VMM allocation, and VMM prefetch. TorchTitan never accesses their private
