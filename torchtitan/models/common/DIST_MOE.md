@@ -24,8 +24,8 @@ from torchtitan.models.deepseek_v3.config_registry import deepseek_v3_16b
 
 config = deepseek_v3_16b()
 config.dist_moe = DistMoeRuntime.Config(
-    device_scratch_capacity_factor=4.0,
-    activation_slot_bytes=None,
+    scratch_capacity_factor=4.0,
+    activation_slot_capacity_factor=1.0,
     pp_activation_slot_policy="stage_microbatch",
 )
 config = apply_transforms(config, [DistMoeTransform()])
@@ -44,7 +44,8 @@ from torchtitan.models.deepseek_v3.config_registry import deepseek_v3_16b
 
 config = deepseek_v3_16b()
 config.dist_moe = DistMoeRuntime.Config(
-    device_scratch_capacity_factor=4.0,
+    scratch_capacity_factor=4.0,
+    activation_slot_capacity_factor=1.0,
 )
 config = apply_transforms(
     config,
@@ -85,7 +86,7 @@ Per-layer settings belong to the transform:
 | Setting | Meaning |
 | --- | --- |
 | `expert_precision` | Select `"bf16"` (default) or the asynchronous `"mxfp8"` expert path. |
-| `inplace_wgrad_accum` | Let annex WGRAD kernels accumulate into an existing standard `parameter.grad` buffer. The annex derives ownership from each logical weight. Enable it only when the integration keeps that gradient storage stable across serialized backward calls. |
+| `inplace_wgrad_accum` | Let annex WGRAD kernels accumulate directly into standard `parameter.grad` storage. This is enabled by default for BF16 and MXFP8 experts. GraphTrainer recipes temporarily disable it because tracing functionalizes parameters into graph inputs; a graph pass must bind those inputs to their leaf `parameter.grad` destinations before enabling accumulation. |
 | `bf16_grouped_gemm_preset` | Optional BF16 FPROP/DGRAD schedule override for expert users. `None` uses the annex's shape-aware production defaults. BF16 WGRAD has its own production schedule. |
 | `block_scaled_config` | MXFP8-only annex policy. `pipeline="staged"` uses separate expert kernels; `pipeline="mega"` uses the fused chunk-pipelined implementation. `fast_math` selects approximate fused-SwiGLU sigmoid math, and `kernel_config` is an expert-only CuTe tuning override. |
 
@@ -94,18 +95,21 @@ Dist-MoE layer:
 
 | Setting | Meaning |
 | --- | --- |
-| `device_scratch_capacity_factor` | Routing imbalance that must fit entirely in HBM scratch. `1.0` covers balanced `local_tokens * top_k` routing. |
-| `activation_slot_bytes` | Exact saved-forward-state capacity requested for each live activation slot, excluding scratch. Mutually exclusive with `activation_slot_capacity_factor`. |
-| `activation_slot_capacity_factor` | Per-slot saved-state capacity relative to balanced routing. `1.0` retains every eligible intermediate when aggregate slot usage is balanced. Mutually exclusive with `activation_slot_bytes`; leaving both unset selects the minimum all-recompute plan. |
+| `activation_slot_bytes` | Exact saved-forward-state capacity requested for each live activation slot, excluding scratch. Set `activation_slot_capacity_factor=None` when using this expert-level byte override. |
+| `activation_slot_capacity_factor` | Per-slot saved-state capacity relative to balanced routing. `1.0` retains every eligible intermediate when aggregate slot usage is balanced. It is `None` by default and mutually exclusive with `activation_slot_bytes`. |
+| `scratch_capacity_factor` | Routing imbalance that must fit entirely in HBM scratch. `1.0` covers balanced `local_tokens * top_k` routing. |
+| `vmm_capacity_factor` | Optional total device-plus-host scratch bound. `None` disables VMM; a value larger than `scratch_capacity_factor` provides host-backed overflow capacity. Saved activations remain in HBM. |
 | `pp_activation_slot_policy` | `"stage_microbatch"` reuses slots at stage-microbatch lifetime; `"microbatch"` retains one deeper slot across all local stages for a microbatch. The default is `"stage_microbatch"`. |
-| `vmm` | Optional annex `VmmConfig` for host-backed overflow scratch. Saved activations always remain in HBM. |
-| `num_sms` | Optional SM count for each Dist-MoE CuTe launch. `None` uses the annex default. |
-| `wgrad_dtype` | W13/W2 gradient output dtype: `"float32"` (default) or `"bfloat16"`. Tensor-core accumulation remains FP32. Recipes that intentionally accumulate unsharded gradients in BF16 set this explicitly. |
 
 The recipe assigns this config to `TrainingEngine.Config.dist_moe`. The training
 engine constructs the runtime after model parallelization and parameter
 materialization; application code should not construct `DistMoeRuntime`
-directly.
+directly. Model dimensions, local token capacity, expert metadata, number of
+live activation slots, layers per slot, and kernel precision are derived from
+the materialized model and PP schedule. W13/W2 gradient output dtype follows
+`training.mixed_precision_param` because an in-place gradient must match its
+unsharded parameter. FSDP separately casts that gradient to
+`training.mixed_precision_reduce` for reduce-scatter.
 
 ## Scratch Capacity
 
@@ -123,7 +127,7 @@ The corresponding worst-case imbalance relative to balanced routing is:
 P * min(K, num_local_experts) / K
 ```
 
-`device_scratch_capacity_factor` sets the HBM-resident receive and scratch
+`scratch_capacity_factor` sets the HBM-resident receive and scratch
 bound. It does not truncate or rebalance routing. A factor of `1.0` is suitable
 for forced-balanced routing. Real routing needs measured headroom; factor four
 is a deliberate recipe choice, not a universal default. Block-scaled kernels
@@ -131,8 +135,8 @@ also pad each local expert to their M-tile size, so planned rows can be slightly
 larger than the logical bound.
 
 Without VMM, exceeding the device factor is an error. With VMM,
-`VmmConfig.total_scratch_capacity_factor` is the larger device-plus-host
-correctness bound. Exceeding that bound is still an error.
+`vmm_capacity_factor` is the larger device-plus-host correctness bound.
+Exceeding that bound is still an error.
 
 ## Saved Activations And Pipeline Slots
 
@@ -178,12 +182,9 @@ graph variants, or a device-side indexing operation. Dist-MoE backward uses its
 saved forward state and therefore needs no second slot input.
 
 The annex's functional and accumulating backward operations are both visible to
-non-strict FX tracing. PP GraphPP currently keeps gradient accumulation outside
-the stage graphs, so its integration recipes trace functional Dist-MoE WGRAD
-outputs. A future GraphTrainer fusion rule can replace those outputs and their
-accumulation sinks with the annex's explicit mutating backward operation. That
-is a performance follow-up, not a correctness requirement for activation slot
-selection.
+non-strict FX tracing. In-place accumulation passes its destination explicitly
+to the registered backward operation, so eager and graph execution retain the
+same standard `parameter.grad` ownership contract.
 
 ## VMM Overflow Scratch
 
@@ -191,30 +192,24 @@ VMM keeps the fast scratch prefix in HBM and maps additional pinned host pages
 into the same stable CUDA virtual range:
 
 ```python
-import dist_moe
-
 from torchtitan.config.transform import apply_transforms, DistMoeTransform
 from torchtitan.models.common.dist_moe import DistMoeRuntime
 from torchtitan.models.deepseek_v3.config_registry import deepseek_v3_16b
 
 config = deepseek_v3_16b()
 config.dist_moe = DistMoeRuntime.Config(
-    device_scratch_capacity_factor=1.0,
-    vmm=dist_moe.VmmConfig(
-        total_scratch_capacity_factor=4.0,
-        prefetch=True,
-    ),
+    activation_slot_capacity_factor=1.0,
+    scratch_capacity_factor=1.0,
+    vmm_capacity_factor=4.0,
 )
 config = apply_transforms(config, [DistMoeTransform()])
 ```
 
 Scratch above factor one and at most factor four can use host-backed pages. No
-saved activation is moved to host memory. `prefetch=True` overlaps physical VMM
-allocation with communication-buffer initialization during context creation;
-`False` performs the same allocation synchronously afterward. Prefetch does not
-change capacity, steady-state placement, kernel behavior, or execution-time
-CPU/GPU synchronization. Disable it when simpler serialized initialization is
-more important than reducing startup latency.
+saved activation is moved to host memory. The runtime uses the annex's default
+prefetch lifecycle, which overlaps physical VMM allocation with communication-
+buffer initialization during context creation without changing capacity,
+steady-state placement, kernel behavior, or execution-time synchronization.
 
 ## FSDP, MXFP8, And Rematerialization
 
