@@ -10,13 +10,12 @@ import asyncio
 import concurrent.futures
 import contextvars
 import enum
-import functools
 import gc
 import logging
 import math
 import os
 import threading
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
@@ -25,13 +24,6 @@ import torch
 import torch.distributed as dist
 import torchstore as ts
 import tyro
-from vllm import EngineArgs, LLMEngine, SamplingParams
-from vllm.config import AttentionConfig, CompilationConfig
-from vllm.config.compilation import CompilationMode, CUDAGraphMode, PassConfig
-from vllm.outputs import RequestOutput
-from vllm.sampling_params import RequestOutputKind
-from vllm.v1.attention.backends.registry import AttentionBackendEnum
-
 from torchtitan.components.checkpointer import CheckpointManager
 from torchtitan.config import CompileConfig, Configurable, DebugConfig, OverrideConfig
 from torchtitan.distributed.spmd_types import (
@@ -55,6 +47,12 @@ from torchtitan.rl.observability import metrics as m
 from torchtitan.rl.observability.vllm import StatLoggerContext, VllmOtelStatLogger
 from torchtitan.rl.types import Completion
 from torchtitan.tools.utils import has_cuda_capability
+from vllm import EngineArgs, LLMEngine, SamplingParams
+from vllm.config import AttentionConfig, CompilationConfig
+from vllm.config.compilation import CompilationMode, CUDAGraphMode, PassConfig
+from vllm.outputs import RequestOutput
+from vllm.sampling_params import RequestOutputKind
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 logger = logging.getLogger(__name__)
 
@@ -144,9 +142,9 @@ def _prepare_generation_request_metrics(
                 inputs.last_token_ts - inputs.first_token_ts
             ) * 1000
             metric_values[f"{prefix}/decode_time_ms"] = first_to_last_token_ms
-            metric_values[
-                f"{prefix}/inter_token_latency_ms"
-            ] = first_to_last_token_ms / (inputs.num_generation_tokens - 1)
+            metric_values[f"{prefix}/inter_token_latency_ms"] = (
+                first_to_last_token_ms / (inputs.num_generation_tokens - 1)
+            )
 
     # Emit each value with both Mean and Max aggregators.
     return [
@@ -633,24 +631,6 @@ class RequestDispatcher:
             self._rank0_drain_task = None
 
 
-def _on_engine_thread(
-    endpoint: Callable[..., Coroutine[Any, Any, Any]],
-) -> Callable[..., Coroutine[Any, Any, Any]]:
-    """Run a `VLLMGenerator` endpoint on the engine thread's event loop, which owns all the
-    engine-loop state, and await its result on the caller's event loop. Cancelling the caller
-    cancels the endpoint there."""
-
-    @functools.wraps(endpoint)
-    async def run_on_engine_thread(self, *args, **kwargs):
-        return await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(
-                endpoint(self, *args, **kwargs), self._engine_event_loop
-            )
-        )
-
-    return run_on_engine_thread
-
-
 class VLLMGenerator(Configurable):
     """vLLM engine to drive concurrent `generate` calls through one SPMD engine loop.
 
@@ -685,9 +665,9 @@ class VLLMGenerator(Configurable):
     For DP>1, the requests will be routed among DPs first. See RequestDispatcher's docstring for more details.
 
     Threading: `engine.step()` blocks, so the engine and everything the engine loop touches (queue, futures,
-    dispatcher) live on a dedicated engine thread, which runs its own event loop. The endpoints marked
-    `_on_engine_thread` run on that loop, and their callers await them from the actor's event loop, which
-    stays free to take calls while the engine steps.
+    dispatcher) live on a dedicated engine thread, which runs its own event loop. The endpoints run on the
+    actor's event loop and reach the engine loop only through the thread-safe inbox and the
+    `concurrent.futures.Future`s it resolves, so the actor's loop stays free to take calls while the engine steps.
 
     A weight sync rides the same loop: `pull_model_state_dict` puts a `ModelStateDictPullRequest` on the inbox, which
     rank 0 turns into a `LoopDecision(LoopAction.PULL_MODEL_STATE_DICT)` applied between step bursts. The engine does
@@ -1036,9 +1016,9 @@ class VLLMGenerator(Configurable):
         # Engine-loop INBOX (rank 0): requests the controller submits; the loop reads them to decide.
         self._inbox = EngineLoopInbox(self._engine_event_loop)
 
-        # Background asyncio.Task running _engine_loop on the engine thread's event loop; None until
-        # start_engine_loop starts it.
-        self._engine_loop_task: asyncio.Task | None = None
+        # `_engine_loop` running on the engine thread's event loop, as a future any thread can await;
+        # None until start_engine_loop starts it.
+        self._engine_loop_future: concurrent.futures.Future[None] | None = None
 
         logger.info("Generator initialized with vLLM engine")
 
@@ -1051,11 +1031,11 @@ class VLLMGenerator(Configurable):
 
         Every engine call runs on this one thread, so the thread-local state the build sets up (CUDA
         device, SPMD contexts) holds wherever the engine is used. The event loop runs for the actor's
-        lifetime, like the actor's own, so an endpoint that reaches it after `close` still returns.
+        lifetime, like the actor's own, so a repeated `close`, which releases on it, still returns.
         """
-        started: concurrent.futures.Future[
-            asyncio.AbstractEventLoop
-        ] = concurrent.futures.Future()
+        started: concurrent.futures.Future[asyncio.AbstractEventLoop] = (
+            concurrent.futures.Future()
+        )
 
         def run() -> None:
             # Keep `self._engine` the only reference: the thread outlives `close`, which drops it.
@@ -1108,25 +1088,25 @@ class VLLMGenerator(Configurable):
         """Sync the structured-logger step counter from the controller."""
         sl.set_step(step, relative_step=relative_step)
 
-    @_on_engine_thread
     async def start_engine_loop(self) -> None:
         """Start the background engine loop on every rank (one-time, idempotent)."""
-        if self._engine_loop_task is None:
-            self._engine_loop_task = asyncio.create_task(self._engine_loop())
+        if self._engine_loop_future is None:
+            self._engine_loop_future = asyncio.run_coroutine_threadsafe(
+                self._engine_loop(), self._engine_event_loop
+            )
 
     def _rank0_check_engine_loop_running(self, endpoint_name: str) -> None:
         """Guard for the rank-0-only endpoints"""
         assert self._rank == 0, f"{endpoint_name} must be routed to rank 0 only"
         if self._inbox.closed:
             raise RuntimeError(f"generator is closed; cannot call {endpoint_name}")
-        if self._engine_loop_task is None:
+        if self._engine_loop_future is None:
             raise RuntimeError(
                 "engine loop not started; call start_engine_loop on all ranks "
                 f"before {endpoint_name}"
             )
 
     @sl.log_trace_span("generate")
-    @_on_engine_thread
     async def generate(
         self,
         prompt_token_ids: list[int],
@@ -1401,7 +1381,6 @@ class VLLMGenerator(Configurable):
         )
 
     @sl.log_trace_span("pull_model_state_dict")
-    @_on_engine_thread
     async def pull_model_state_dict(self, version: int) -> None:
         """Queues a weight pull for `version` and blocks until the engine loop has finished pulling.
         Pulls queued together are applied once, at the highest version.
@@ -1468,7 +1447,6 @@ class VLLMGenerator(Configurable):
 
         model_sd.update(dtensor_to_plain_tensor_state_dict(dtensor_model_sd))
 
-    @_on_engine_thread
     async def close(self) -> None:
         """Stop the engine loop, which releases the dispatcher and the vLLM engine on exit.
 
@@ -1478,15 +1456,20 @@ class VLLMGenerator(Configurable):
         if self._rank == 0:
             self._inbox.close(CloseRequest(), reason="generator is closed")
 
-        if self._engine_loop_task is None:
-            # The loop never started (or an earlier `close` already awaited it), so release here.
-            await self._release_loop_resources()
+        if self._engine_loop_future is None:
+            # The loop never started (or an earlier `close` already awaited it), so release here, on
+            # the engine thread, which makes every engine call.
+            await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(
+                    self._release_loop_resources(), self._engine_event_loop
+                )
+            )
             return
         try:
-            await self._engine_loop_task
+            await asyncio.wrap_future(self._engine_loop_future)
         except Exception:
             logger.exception("engine loop raised during shutdown")
-        self._engine_loop_task = None
+        self._engine_loop_future = None
 
     async def _release_loop_resources(self) -> None:
         """Stop the dispatcher, fail the futures it left unresolved, and drop the vLLM engine. No-op
