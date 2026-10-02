@@ -117,9 +117,10 @@ Forward/backward initialization supplies materialized model parts, topology,
 schedule, and execution-mode registration to the runtime. Model dimensions,
 local token capacity, expert metadata, live slots, layers per slot, and kernel
 precision are derived rather than duplicated in the recipe. W13/W2 gradient
-output currently follows `training.mixed_precision_param`; FSDP separately
-casts it to `training.mixed_precision_reduce` for reduce-scatter. A code TODO
-tracks direct `parameter.grad_dtype` support in Annex.
+output follows `training.mixed_precision_reduce`. The annex validates that
+selection against each parameter's effective gradient dtype and emits or
+accumulates WGrad directly in that dtype, including FP32 WGrad for BF16
+compute parameters.
 
 ## Scratch Capacity
 
