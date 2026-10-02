@@ -518,6 +518,7 @@ def test_training_engine_configures_gradient_accumulation_cuda_graph() -> None:
         TrainingEngine,
         SimpleNamespace(
             config=SimpleNamespace(
+                dist_moe=None,
                 sdc_replayer=None,
                 debug=SimpleNamespace(spmd_typechecking=False),
                 training=SimpleNamespace(disable_cuda_graphs=False),
@@ -560,6 +561,7 @@ def test_training_engine_skips_gradient_accumulation_graph_when_unsupported() ->
         TrainingEngine,
         SimpleNamespace(
             config=SimpleNamespace(
+                dist_moe=None,
                 sdc_replayer=None,
                 debug=SimpleNamespace(spmd_typechecking=False),
                 training=SimpleNamespace(disable_cuda_graphs=False),
@@ -855,7 +857,7 @@ def test_loading_checkpoint_rearms_replay_schedule():
     assert disabled.num_completed_steps == 1
 
 
-def test_initialize_preserves_phase_order():
+def test_seed_checkpoint_initialize_skips_forward_backward():
     events = []
     model_mem_stats = object()
     engine = cast(
@@ -877,8 +879,9 @@ def test_initialize_preserves_phase_order():
                 side_effect=lambda *args, **kwargs: events.append("checkpointer")
             ),
             _initialize_forward_backward=MagicMock(
-                side_effect=lambda: events.append("forward_backward")
+                side_effect=lambda **_kwargs: events.append("forward_backward")
             ),
+            _dist_moe_runtime=None,
             state_dict_adapter=None,
         ),
     )
@@ -894,7 +897,6 @@ def test_initialize_preserves_phase_order():
         "model_memory",
         "optim",
         "checkpointer",
-        "forward_backward",
     ]
     assert engine.model_device_mem_stats is model_mem_stats
     engine._initialize_model.assert_called_once_with(
@@ -907,7 +909,7 @@ def test_initialize_preserves_phase_order():
         dataloader=None,
         sd_adapter=engine.state_dict_adapter,
     )
-    engine._initialize_forward_backward.assert_called_once_with()
+    engine._initialize_forward_backward.assert_not_called()
 
 
 def test_compute_training_performance_metrics():
@@ -961,6 +963,7 @@ def test_cuda_graph_accumulation_requires_deferred_gradient_reduction() -> None:
         SimpleNamespace(
             parallelism_context=SimpleNamespace(pp_enabled=False),
             config=SimpleNamespace(
+                dist_moe=None,
                 training=SimpleNamespace(disable_cuda_graphs=False),
                 sdc_replayer=None,
                 parallelism=SimpleNamespace(
@@ -1006,6 +1009,7 @@ def test_initialize_forward_backward_uses_eager_fsdp_reduction_config(
         TrainingEngine,
         SimpleNamespace(
             config=SimpleNamespace(
+                dist_moe=None,
                 training=SimpleNamespace(disable_cuda_graphs=True),
                 parallelism=SimpleNamespace(
                     fsdp_defer_gradient_reduction=configured_defer,
