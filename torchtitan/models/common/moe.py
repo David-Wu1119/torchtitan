@@ -130,8 +130,8 @@ class RoutedExperts(Module):
         )
 
         with maybe_set_sparse_mesh():
-            # The bf16 cast runs inside the w13 region, so the routed input
-            # feeds only regions and needs no pin.
+            # The casts and output_postprocess run inside the w13/w2 regions, so
+            # the routed input and output feed only regions and need no pin.
             gate_up_R2F = remat.region(
                 lambda x_RD, offsets_E: self.w13(x_RD.bfloat16(), offsets_E),
                 self.remat_region_name("w13"),
@@ -147,21 +147,26 @@ class RoutedExperts(Module):
                 # keeping it.
                 recompute=True,
             )(gate_RF, up_RF, offsets=offsets_E)
+            output_dtype = routed_input_RD.dtype
             routed_output_RD = remat.region(
-                self.w2,
+                lambda h_RF, offsets_E: self._w2_output(h_RF, offsets_E, output_dtype),
                 self.remat_region_name("w2"),
                 recompute=self.remat_should_recompute("w2"),
             )(hidden_RF, offsets_E)
-            remat.recompute_needs_tensor(routed_output_RD)
-            routed_output_RD = routed_output_RD.type_as(routed_input_RD)
-            if self.output_postprocess is not None:
-                routed_output_RD = self.output_postprocess(routed_output_RD)
         out_TD = self.token_dispatcher.combine(
             routed_output_RD,
             metadata,
             x_TD,
         )
         return out_TD
+
+    def _w2_output(
+        self, hidden_RF: torch.Tensor, offsets_E: torch.Tensor, dtype: torch.dtype
+    ) -> torch.Tensor:
+        output_RD = self.w2(hidden_RF, offsets_E).to(dtype)
+        if self.output_postprocess is not None:
+            output_RD = self.output_postprocess(output_RD)
+        return output_RD
 
 
 class TokenChoiceTopKRouter(Module):
