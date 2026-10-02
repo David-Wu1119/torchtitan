@@ -10,7 +10,6 @@ import logging
 import warnings
 
 import torch
-import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
 
 from torchtitan.distributed import ParallelismContext
@@ -45,11 +44,10 @@ def _maybe_enable_async_tp(
 
 
 def apply_compile(
-    model: nn.Module,
     *,
     compile_config: GraphTrainerCompileConfig,
     parallelism_context: ParallelismContext,
-) -> nn.Module:
+) -> None:
     """Configure tracing and leave whole-step capture to ``GraphRuntime``."""
     _maybe_enable_async_tp(
         compile_config,
@@ -66,4 +64,3 @@ def apply_compile(
         )
     else:
         logger.info("Graph capture will happen at training time")
-    return model

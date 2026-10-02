@@ -40,7 +40,6 @@ from torchtitan.experiments.graph_trainer.configs import (
 )
 from torchtitan.experiments.graph_trainer.graph_builder import (
     GraphExecutionPlan,
-    GraphTrainerConfigView,
     GraphTrainerStageGraphProvider,
     ReduceGradPlacement,
     UnshardPlacement,
@@ -415,7 +414,7 @@ def _register_graph_runtime(
     schedule: _PipelineScheduleRuntime,
     *,
     plan: GraphExecutionPlan,
-    config: "GraphTrainer.Config | GraphTrainerConfigView",
+    config: "GraphTrainer.Config",
     loss_fn: LossFunction,
     parallelism_context: ParallelismContext,
     warn_if_cuda_graph_pass_requested: bool,
@@ -476,7 +475,7 @@ def _make_pipeline_parallel_graph_runtime(
     stages: list[GraphPipelineStage],
     *,
     plan: GraphExecutionPlan,
-    config: "GraphTrainer.Config | GraphTrainerConfigView",
+    config: "GraphTrainer.Config",
     loss_fn: LossFunction,
     parallelism_context: ParallelismContext,
 ) -> GraphRuntime:
@@ -503,7 +502,7 @@ def make_graph_runtime(
     *,
     num_microbatches: int,
     parallelism_context: ParallelismContext,
-    config: "GraphTrainer.Config | GraphTrainerConfigView",
+    config: "GraphTrainer.Config",
     loss_fn: LossFunction,
 ) -> GraphRuntime:
     """Build the GraphTrainer schedule and runtime with a stage-graph provider.
@@ -694,9 +693,7 @@ def make_graph_runtime(
         num_microbatches: Trainer accumulation steps for PP=1, or configured
             pipeline microbatches for PP>1.
         parallelism_context: Parallel topology used to select PP=1 or PP>1 behavior.
-        config: Full Trainer configuration for PP=1. PP>1 is entered through
-            the generic pipelining API and supplies only its compile,
-            parallelism, and model fields.
+        config: Full GraphTrainer configuration.
         loss_fn: Loss function used by the schedule and graph provider.
     """
     pp_enabled = parallelism_context.pp_enabled
@@ -719,8 +716,6 @@ def make_graph_runtime(
             parallelism_context=parallelism_context,
         )
 
-    if isinstance(config, GraphTrainerConfigView):
-        raise ValueError("PP=1 FORWARD_BACKWARD requires the full Trainer config")
     return _make_spmd_graph_runtime(
         stages[0],
         plan=plan,
@@ -766,30 +761,29 @@ def graph_pipeline_llm(
     parallelism_context: ParallelismContext,
     training: TrainingConfig,
     parallelism: ParallelismConfig,
-    compile_config: GraphTrainerCompileConfig,
     ac_config: ActivationCheckpointingConfig,
     dump_folder: str,
     device: torch.device,
     model_config: BaseModel.Config,
     loss_fn: LossFunction,
-) -> tuple[GraphRuntime, list[BaseModel], bool, bool]:
-    """Build a GraphPP pipeline schedule for GraphTrainer.
+) -> tuple[list[GraphPipelineStage], list[BaseModel], bool, bool]:
+    """Build the local GraphPP stages; ``GraphTrainingEngine`` builds their runtime.
 
     Args:
         model: The full model before PP stage splitting.
         parallelism_context: TorchTitan parallel dimension helper.
         training: Training config used for local batch size.
         parallelism: Parallelism config used for PP schedule and module split.
-        compile_config: GraphTrainer compile config.
         ac_config: Activation checkpointing config forwarded to the model.
         dump_folder: Artifact/debug output directory.
         device: Local device for the stage.
         model_config: Model config consumed by stage graph passes.
-        loss_fn: Loss function used by upstream PP metadata and GraphPP tracing.
+        loss_fn: Unused; ``GraphTrainingEngine`` passes it to the runtime.
 
     Returns:
-        A tuple of ``(runtime, model_parts, has_first_stage, has_last_stage)``.
+        A tuple of ``(stages, model_parts, has_first_stage, has_last_stage)``.
     """
+    del loss_fn
     pp_mesh = parallelism_context.get_mesh("pp")
 
     (
@@ -825,7 +819,6 @@ def graph_pipeline_llm(
             parallelism_context=parallelism_context,
             training=training,
             parallelism=parallelism,
-            compile_config=compile_config,
             ac_config=ac_config,
             dump_folder=dump_folder,
         )
@@ -847,20 +840,8 @@ def graph_pipeline_llm(
             )
         )
 
-    graph_runtime = make_graph_runtime(
-        stages,
-        num_microbatches=parallelism.num_pp_microbatches,
-        parallelism_context=parallelism_context,
-        config=GraphTrainerConfigView(
-            compile=compile_config,
-            parallelism=parallelism,
-            model=model_config,
-        ),
-        loss_fn=loss_fn,
-    )
-
     return (
-        graph_runtime,
+        stages,
         model_parts,
         any(stage.is_first for stage in stages),
         any(stage.is_last for stage in stages),

@@ -29,7 +29,6 @@ from torchtitan.config import TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.distributed import ParallelismContext
 from torchtitan.distributed.activation_checkpoint import SelectiveAC
-from torchtitan.distributed.local_compile import LocalCompileConfig
 from torchtitan.models.qwen3_5 import build_model_config, Qwen35Model
 from torchtitan.tools import utils
 
@@ -92,7 +91,6 @@ def run_worker(args):
         parallelism_context=parallelism_context,
         training=training,
         parallelism=parallelism,
-        compile_config=LocalCompileConfig(),
         ac_config=SelectiveAC.Config(),
         dump_folder="/tmp",
     )

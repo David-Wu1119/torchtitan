@@ -166,7 +166,7 @@ Current limitations:
 
 GraphTrainer can use AutoParallel to solve SPMD placement for supported models,
 then trace and compile the placed model through the regular GraphRuntime flow.
-Enable it with `config.compile.enable_autoparallel = True` in the recipe.
+Enable it with `config.model.enable_autoparallel = True` in the recipe.
 
 Llama 3 debug model:
 

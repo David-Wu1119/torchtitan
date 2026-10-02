@@ -33,4 +33,6 @@ def build_model_config(
     config = GraphTrainerLlama3Model.Config(
         **{f.name: getattr(base, f.name) for f in fields(base)}
     )
+    # GraphTrainer compiles the whole step, so no local compile regions.
+    config.local_compile_regions = []
     return config

@@ -31,8 +31,6 @@ from torchtitan.distributed import ParallelismContext
 from torchtitan.distributed.activation_checkpoint import ActivationCheckpointingConfig
 from torchtitan.distributed.fsdp import get_fsdp_reshard_after_forward_policy
 from torchtitan.experiments.graph_trainer.autoparallel_api import AutoParallelGraph
-from torchtitan.experiments.graph_trainer.compile import apply_compile
-from torchtitan.experiments.graph_trainer.configs import GraphTrainerCompileConfig
 from torchtitan.tools.utils import device_type
 
 
@@ -95,7 +93,6 @@ def parallelize_autoparallel_deepseekv3(
     parallelism_context: ParallelismContext,
     training: TrainingConfig,
     parallelism: ParallelismConfig,
-    compile_config: GraphTrainerCompileConfig,
     ac_config: ActivationCheckpointingConfig,
     dump_folder: str,
 ):
@@ -202,17 +199,9 @@ def parallelize_autoparallel_deepseekv3(
         # loss computation, so graph_trainer can consume each rank's local
         # logits as a plain tensor and pair them with local labels. Only TP
         # vocab sharding needs a DTensor output boundary for loss_parallel().
-        parallel_mod = autop.apply_placement_for_fx_module(
-            sharding_placement,
-            compile_config=compile_config,
-        )
+        parallel_mod = autop.apply_placement_for_fx_module(sharding_placement)
 
     _set_torchtitan_fields(parallel_mod)
     _preserve_moe_attributes(ap_model, parallel_mod)
 
-    model = apply_compile(
-        parallel_mod,
-        compile_config=compile_config,
-        parallelism_context=parallelism_context,
-    )
-    return model
+    return parallel_mod

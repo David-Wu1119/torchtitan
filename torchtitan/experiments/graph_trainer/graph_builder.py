@@ -37,7 +37,6 @@ from torch.distributed.pipelining.schedules import (
     _PipelineScheduleRuntime,
 )
 
-from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.distributed import ParallelismContext
 from torchtitan.experiments.graph_trainer.common_utils import (
     annotate_parameter_gradient,
@@ -121,7 +120,6 @@ from torchtitan.experiments.graph_trainer.storage import DiskStorageAdapter
 from torchtitan.experiments.graph_trainer.wgrad_accumulation import (
     fuse_wgrad_accumulation_pass,
 )
-from torchtitan.protocols.model import BaseModel
 
 
 if TYPE_CHECKING:
@@ -188,23 +186,6 @@ def make_fwd_bwd_step(model, loss_fn):
         return [loss, *grads]
 
     return fwd_bwd_step
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class GraphTrainerConfigView:
-    """Subset of ``GraphTrainer.Config`` read by PP>1 graph construction.
-
-    GraphPP is entered through TorchTitan's generic pipelining function API,
-    which passes decomposed config fields instead of the full
-    ``GraphTrainer.Config``. PP>1 graph construction reads only ``compile``,
-    ``parallelism``, and ``model``, so GraphPP exposes exactly those fields
-    instead of synthesizing a fake full trainer config. PP=1 passes the full
-    ``GraphTrainer.Config``, which has the same fields.
-    """
-
-    compile: GraphTrainerCompileConfig
-    parallelism: ParallelismConfig
-    model: BaseModel.Config
 
 
 def _find_fsdp_bucketing_pass(
@@ -1473,7 +1454,7 @@ def _apply_graph_pp_pre_partition_or_extraction_passes(
     stage: GraphPipelineStage,
     traced: TracedResult,
     *,
-    config: "GraphTrainer.Config | GraphTrainerConfigView",
+    config: "GraphTrainer.Config",
     split_fsdp_param_unshard: bool,
     split_fsdp_grad_reduction: bool,
 ) -> Callable | None:
@@ -2212,7 +2193,7 @@ def _build_stage_graphs(
     loss_kwargs: dict[str, Any],
     *,
     loss_fn: Callable | None = None,
-    config: "GraphTrainer.Config | GraphTrainerConfigView",
+    config: "GraphTrainer.Config",
     compile_graphs: bool = True,
     extract_fsdp_param_unshard: bool = True,
     extract_fsdp_grad_reduction: bool = True,
@@ -2540,7 +2521,7 @@ class GraphTrainerStageGraphProvider:
     """
 
     loss_fn: Callable
-    config: "GraphTrainer.Config | GraphTrainerConfigView"
+    config: "GraphTrainer.Config"
     plan: GraphExecutionPlan
     parallelism_context: ParallelismContext | None = None
     _warned_cuda_graph: bool = False

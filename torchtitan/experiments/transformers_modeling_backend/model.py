@@ -25,6 +25,7 @@ from transformers.modeling_utils import AttentionInterface, PreTrainedModel
 
 from torchtitan.config import TORCH_DTYPE_MAP, TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
+from torchtitan.distributed.local_compile import apply_local_compile
 from torchtitan.distributed.parallelism_context import ParallelismContext
 from torchtitan.distributed.utils import is_in_batch_invariant_mode
 from torchtitan.models.common.attention import (
@@ -280,6 +281,8 @@ class HFTransformerModel(BaseModel):
                 None  # noqa: this sets Config.param_init, not Module._param_init
             )
             self.sharding_config = None
+            # HF modules run eager; the loss and the swapped-in TorchTitan MoE (SwiGLU) can compile.
+            self.local_compile_regions = ["loss", "swiglu"]
 
             assert model_config is not None, "model_config is required"
 
@@ -301,6 +304,7 @@ class HFTransformerModel(BaseModel):
             dataclasses.replace() re-invokes __init__, which is incompatible
             with the custom __init__ here (expects model_config).
             """
+            apply_local_compile(self.local_compile_regions)
             clone = self._replace()
             instance = self._owner(config=clone, **kwargs)
             if self.param_init is not None:

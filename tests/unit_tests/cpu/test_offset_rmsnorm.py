@@ -9,13 +9,13 @@ from torchtitan_recipes.tests.models.qwen3_6 import qwen36_debugmodel
 from torchtitan_recipes.tests.models.qwen3_8 import qwen38_debugmodel
 
 
-def test_qwen35_architecture_enables_offset_rmsnorm_local_compile() -> None:
+def test_qwen35_family_default_local_compile_regions() -> None:
     for config_factory in (qwen35_debugmodel, qwen36_debugmodel, qwen38_debugmodel):
         config = config_factory()
-        assert config.compile is not None
-        assert config.compile.regions == [
-            "gated_rmsnorm",
+        assert config.model.local_compile_regions == [
             "loss",
+            "swiglu",
             "cos_sin_rope",
+            "gated_rmsnorm",
             "offset_rmsnorm",
         ]

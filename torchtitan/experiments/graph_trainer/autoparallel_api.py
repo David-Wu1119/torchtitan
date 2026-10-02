@@ -17,8 +17,6 @@ from torch._functorch.aot_autograd import aot_compile_joint_with_descriptors
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor
 
-from torchtitan.experiments.graph_trainer.configs import GraphTrainerCompileConfig
-
 
 @dataclass(frozen=True)
 class AutoParallelModelOutput:
@@ -79,7 +77,6 @@ class AutoParallelGraph(AutoParallel):
         self,
         sharding_placement=None,
         *,
-        compile_config: GraphTrainerCompileConfig,
         model_output: AutoParallelModelOutput | None = None,
     ) -> nn.Module:
         """Return an AOT-backed parallel module for graph_trainer tracing.

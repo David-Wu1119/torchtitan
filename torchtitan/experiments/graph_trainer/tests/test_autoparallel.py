@@ -119,7 +119,6 @@ def test_autoparallel_graph_pass_selection_uses_regular_memory_policy():
     )
     config = SimpleNamespace(
         compile=GraphTrainerCompileConfig(
-            enable_autoparallel=True,
             enable_async_tensor_parallel=False,
             disable_passes=["cuda_graph_pass"],
         ),
@@ -142,18 +141,16 @@ def test_autoparallel_graph_pass_selection_uses_regular_memory_policy():
 @pytest.mark.parametrize(
     (
         "model_name",
-        "inductor_compilation",
         "fsdp_reshard_after_forward",
         "expected_reshard_after_forward",
     ),
     [
-        ("llama", "regional", "always", True),
-        ("deepseek", "full", "never", False),
+        ("llama", "always", True),
+        ("deepseek", "never", False),
     ],
 )
 def test_model_autoparallel_uses_fx_module_path_and_resolved_policy(
     model_name,
-    inductor_compilation,
     fsdp_reshard_after_forward,
     expected_reshard_after_forward,
 ):
@@ -163,10 +160,6 @@ def test_model_autoparallel_uses_fx_module_path_and_resolved_policy(
             self.model_args = SimpleNamespace(vocab_size=16)
 
     _FakeAutoParallelGraph.instances.clear()
-    compile_config = GraphTrainerCompileConfig(
-        enable_autoparallel=True,
-        inductor_compilation=inductor_compilation,
-    )
     parallelism = ParallelismConfig(
         fsdp_reshard_after_forward=fsdp_reshard_after_forward
     )
@@ -200,11 +193,6 @@ def test_model_autoparallel_uses_fx_module_path_and_resolved_policy(
                 parallelize_autoparallel, "AutoParallelGraph", _FakeAutoParallelGraph
             )
         )
-        stack.enter_context(
-            patch.object(
-                parallelize_autoparallel, "apply_compile", lambda model, **_: model
-            )
-        )
         for extra_patch in extra_patches:
             stack.enter_context(extra_patch)
 
@@ -213,7 +201,6 @@ def test_model_autoparallel_uses_fx_module_path_and_resolved_policy(
             parallelism_context=parallelism_context,
             training=_training_config(),
             parallelism=parallelism,
-            compile_config=compile_config,
             ac_config=object(),
             dump_folder="",
         )
@@ -224,5 +211,4 @@ def test_model_autoparallel_uses_fx_module_path_and_resolved_policy(
     assert mp_policy.reduce_dtype is torch.float32
     assert autop.kwargs["reshard_after_forward"] is expected_reshard_after_forward
     assert autop.kwargs.get("dynamic", False) is (model_name == "deepseek")
-    assert autop.apply_kwargs["compile_config"] is compile_config
     assert autop.used_fx_path

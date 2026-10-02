@@ -16,9 +16,6 @@ from torchtitan.distributed import ParallelismContext
 from torchtitan.distributed.activation_checkpoint import ActivationCheckpointingConfig
 
 from .common_utils import annotate_graph_trainer_model, apply_simple_fsdp
-from .compile import apply_compile
-from .configs import GraphTrainerCompileConfig
-from .ep_eager_chunk import maybe_apply_ep_overlap_eager_chunking
 from .simple_fsdp import disable_active_parametrization
 
 
@@ -35,7 +32,6 @@ class GraphTrainerModel:
         parallelism_context: ParallelismContext,
         training: TrainingConfig,
         parallelism: ParallelismConfig,
-        compile_config: GraphTrainerCompileConfig,
         ac_config: ActivationCheckpointingConfig | None,
         dump_folder: str,
         skip_dp: bool = False,
@@ -57,16 +53,10 @@ class GraphTrainerModel:
 
         annotate_graph_trainer_model(self)
         self._parallelize(parallelism_context)
-        model = apply_simple_fsdp(
+        return apply_simple_fsdp(
             self,
             parallelism_context=parallelism_context,
             training=training,
-        )
-        maybe_apply_ep_overlap_eager_chunking(model, compile_config)
-        return apply_compile(
-            model,
-            compile_config=compile_config,
-            parallelism_context=parallelism_context,
         )
 
     def pipeline(self, **kwargs: Any):

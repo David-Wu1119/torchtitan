@@ -14,24 +14,17 @@ from ..model import GraphTrainerModel
 class GraphTrainerLlama3Model(GraphTrainerModel, Llama3Model):
     @dataclass(kw_only=True, slots=True)
     class Config(Llama3Model.Config):
-        pass
+        enable_autoparallel: bool = False
+        """Shard with the AutoParallel solver instead of the manual sharding plan."""
 
     def __init__(self, config: Config):
         super().__init__(config)
 
-    def parallelize(self, *, compile_config, skip_dp: bool = False, **kwargs):
-        if compile_config.enable_autoparallel:
+    def parallelize(self, *, skip_dp: bool = False, **kwargs):
+        if self.config.enable_autoparallel:
             if skip_dp:
                 raise ValueError("GraphTrainer models do not support skip_dp=True.")
             from .parallelize_autoparallel import parallelize_autoparallel_llama
 
-            return parallelize_autoparallel_llama(
-                self,
-                compile_config=compile_config,
-                **kwargs,
-            )
-        return super().parallelize(
-            compile_config=compile_config,
-            skip_dp=skip_dp,
-            **kwargs,
-        )
+            return parallelize_autoparallel_llama(self, **kwargs)
+        return super().parallelize(skip_dp=skip_dp, **kwargs)

@@ -271,7 +271,7 @@ def llama3_fsdp_tp_async_tp():
 
 def llama3_autoparallel_fsdp_tp():
     config = llama3_recipes.graph_trainer_llama3_debugmodel_sdpa_cross_entropy_loss()
-    config.compile.enable_autoparallel = True
+    config.model.enable_autoparallel = True
     config.parallelism.data_parallel_shard_degree = 2
     config.parallelism.tensor_parallel_degree = 2
     return config
@@ -279,7 +279,7 @@ def llama3_autoparallel_fsdp_tp():
 
 def deepseek_v3_autoparallel_edp_shard_ep():
     config = deepseek_v3_recipes.graph_trainer_deepseek_v3_debugmodel()
-    config.compile.enable_autoparallel = True
+    config.model.enable_autoparallel = True
     config.parallelism.data_parallel_shard_degree = 4
     config.parallelism.expert_parallel_degree = 2
     return config

@@ -28,8 +28,6 @@ from torchtitan.experiments.graph_trainer.autoparallel_api import (
     AutoParallelGraph,
     AutoParallelModelOutput,
 )
-from torchtitan.experiments.graph_trainer.compile import apply_compile
-from torchtitan.experiments.graph_trainer.configs import GraphTrainerCompileConfig
 from torchtitan.tools.utils import device_type
 
 
@@ -42,7 +40,6 @@ def parallelize_autoparallel_llama(
     parallelism_context: ParallelismContext,
     training: TrainingConfig,
     parallelism: ParallelismConfig,
-    compile_config: GraphTrainerCompileConfig,
     ac_config: ActivationCheckpointingConfig,
     dump_folder: str,
 ):
@@ -154,13 +151,7 @@ def parallelize_autoparallel_llama(
         )
         parallel_mod = autop.apply_placement_for_fx_module(
             sharding_placement,
-            compile_config=compile_config,
             model_output=model_output,
         )
 
-    model = apply_compile(
-        parallel_mod,
-        compile_config=compile_config,
-        parallelism_context=parallelism_context,
-    )
-    return model
+    return parallel_mod

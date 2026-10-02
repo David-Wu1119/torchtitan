@@ -230,10 +230,6 @@ class GraphTrainerCompileConfig:
     path.
     """
 
-    enable_autoparallel: bool = False
-    """Use AutoParallelGraph (ILP solver-based SPMD sharding) instead of
-    manual TP/FSDP/EP."""
-
 
 def validate_ep_overlap_config(
     ep_overlap_config: EpOverlapConfig,
@@ -267,8 +263,9 @@ def to_graph_trainer_config(
     """Convert a base Trainer.Config to a GraphTrainer.Config.
 
     Copies all fields from the base config and converts its model config to the
-    GraphTrainer model config class. The compile field is removed and left as
-    the GraphTrainer.Config default; callers should explicitly set it.
+    GraphTrainer model config class, without local compile regions because
+    GraphTrainer traces the whole step. The ``compile`` field keeps the
+    GraphTrainer.Config default; callers should explicitly set it.
     """
     from .trainer import GraphTrainer
 
@@ -279,8 +276,9 @@ def to_graph_trainer_config(
             for f in fields(base_config.model)
         }
     )
+    # GraphTrainer compiles the whole step (config.compile), so it drops the model's local compile regions.
+    graph_model.local_compile_regions = []
     d["model"] = graph_model
-    d.pop("compile")
 
     # graph_trainer uses graph-based SAC instead of eager AC. Override any
     # enabled AC policy with the default selective one so callers don't need

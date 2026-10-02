@@ -32,6 +32,7 @@ from torchtitan.components.loss import (
     GradAccumulator,
     IGNORE_INDEX,
 )
+from torchtitan.distributed.local_compile import apply_local_compile
 from torchtitan.distributed.spmd_types import set_current_spmd_mesh
 from torchtitan.models.deepseek_v3.mtp import MTPDecoder, MTPLoss, roll_mtp_sequence
 
@@ -1071,6 +1072,8 @@ class TestChunkedLossWrapper(unittest.TestCase):
         from torch._dynamo.decorators import mark_unbacked
         from torch.fx.experimental.proxy_tensor import make_fx
 
+        # A model built by an earlier test may have compiled the loss; trace it eager.
+        apply_local_compile([])
         torch.manual_seed(42)
         T, D, V, num_chunks = 32, 8, 32, 4
         _model, chunked_loss = self._make_model_and_loss(D, V, num_chunks)

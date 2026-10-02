@@ -32,6 +32,10 @@ from torchtitan.distributed import ParallelismContext, utils as dist_utils
 from torchtitan.experiments.graph_trainer.common_utils import (
     maybe_register_blockmask_pytree_node,
 )
+from torchtitan.experiments.graph_trainer.compile import apply_compile
+from torchtitan.experiments.graph_trainer.ep_eager_chunk import (
+    maybe_apply_ep_overlap_eager_chunking,
+)
 from torchtitan.experiments.graph_trainer.memory_policy import (
     validate_memory_policy_config,
 )
@@ -152,15 +156,17 @@ def _common_setup(config):
     ):
         model = model_config.build()
 
-    # For aot_fx_trace, apply_compile inside model.parallelize is a no-op
-    # (returns model unchanged), so we pass the real compile_config.
     model = model.parallelize(
         parallelism_context=parallelism_context,
         training=config.training,
         parallelism=parallelism,
-        compile_config=compile_config,
         ac_config=config.activation_checkpoint,
         dump_folder=config.dump_folder,
+    )
+    maybe_apply_ep_overlap_eager_chunking(model, compile_config)
+    apply_compile(
+        compile_config=compile_config,
+        parallelism_context=parallelism_context,
     )
 
     # CooR must be disabled during init_weights because DTensor RNG ops

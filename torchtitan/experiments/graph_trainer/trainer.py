@@ -14,8 +14,13 @@ import torch
 
 from torchtitan.components.data.types import TrainingMicrobatch
 from torchtitan.distributed.cuda_graph import cuda_graph_teardown
+from torchtitan.experiments.graph_trainer.compile import apply_compile
 from torchtitan.experiments.graph_trainer.configs import GraphTrainerCompileConfig
+from torchtitan.experiments.graph_trainer.ep_eager_chunk import (
+    maybe_apply_ep_overlap_eager_chunking,
+)
 from torchtitan.experiments.graph_trainer.graph_pp.pipeline import (
+    make_graph_runtime,
     make_spmd_graph_runtime,
 )
 from torchtitan.experiments.graph_trainer.memory_policy import (
@@ -76,6 +81,12 @@ class GraphTrainingEngine(TrainingEngine):
     ) -> None:
         if config.optim.enable_cuda_graph:
             raise ValueError("Optim CUDA graphs are not supported with GraphTrainer.")
+        if model_config.local_compile_regions:
+            raise ValueError(
+                "GraphTrainer traces the whole step into one graph; set "
+                "model.local_compile_regions = [] "
+                f"(got {model_config.local_compile_regions})."
+            )
         validate_memory_policy_config(config.compile)
         super().__init__(
             config,
@@ -85,13 +96,39 @@ class GraphTrainingEngine(TrainingEngine):
         )
         self._pinned_pool_ctx = None
 
+    def _initialize_model(
+        self,
+        *,
+        hf_assets_path: str,
+        create_seed_checkpoint: bool = False,
+    ) -> None:
+        super()._initialize_model(
+            hf_assets_path=hf_assets_path,
+            create_seed_checkpoint=create_seed_checkpoint,
+        )
+        for model_part in self.model_parts:
+            maybe_apply_ep_overlap_eager_chunking(model_part, self.config.compile)
+        apply_compile(
+            compile_config=self.config.compile,
+            parallelism_context=self.parallelism_context,
+        )
+
     def _initialize_forward_backward(self) -> None:
         if self.config.parallelism.fsdp_defer_gradient_reduction:
             raise ValueError(
                 "GraphTrainer does not support fsdp_defer_gradient_reduction."
             )
 
-        if not self.parallelism_context.pp_enabled:
+        if self.parallelism_context.pp_enabled:
+            # GraphPP's model.pipeline returns stages; build their runtime here.
+            self.pp_schedule = make_graph_runtime(
+                self.pp_schedule,
+                num_microbatches=self.config.parallelism.num_pp_microbatches,
+                parallelism_context=self.parallelism_context,
+                config=self.config,
+                loss_fn=self.loss_fn,
+            )
+        else:
             num_tokens_per_train_step = self.config.training.num_tokens_per_train_step
             if num_tokens_per_train_step < 0:
                 num_microbatches = 1
@@ -259,6 +296,7 @@ class GraphTrainer(Trainer):
         compile: GraphTrainerCompileConfig = field(
             default_factory=GraphTrainerCompileConfig
         )
+        """Whole-step compile. GraphTrainer ignores ``model.local_compile_regions``, which must be empty."""
 
     engine_cls = GraphTrainingEngine
     engine: GraphTrainingEngine
