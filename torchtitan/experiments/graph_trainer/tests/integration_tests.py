@@ -17,6 +17,7 @@ from torchtitan_recipes.tests.graph_trainer import (
     muse_glimmer as muse_glimmer_recipes,
     qwen3 as qwen3_recipes,
 )
+from torchtitan_recipes.tests.suites import b200 as b200_recipes
 
 # TODO: Re-enable after regional_inductor can trace the CP load balancer's
 # index-rearrange constants; it currently raises a FunctionalTensor error.
@@ -656,6 +657,31 @@ def build_graph_trainer_h100_test_list() -> list[IntegrationTestDefinition]:
     return _build_deepseek_v3_tests() + _build_qwen3_tests() + _build_async_tp_tests()
 
 
+def build_graph_trainer_b200_test_list() -> list[IntegrationTestDefinition]:
+    """Dist-MoE tests that require B200-class hardware."""
+    return [
+        IntegrationTestDefinition(
+            configs=[
+                b200_recipes.graph_trainer_deepseek_v3_debugmodel_dist_moe_bf16_fsdp2_ep2,
+                b200_recipes.graph_trainer_deepseek_v3_debugmodel_dist_moe_mxfp8_fsdp2_ep2,
+            ],
+            test_descr="GraphTrainer BF16 and MXFP8 Dist-MoE with FSDP and EP",
+            test_name="graph_trainer_dist_moe_fsdp_ep",
+            ngpu=2,
+            use_real_pg=True,
+        ),
+        IntegrationTestDefinition(
+            configs=[
+                b200_recipes.graph_trainer_deepseek_v3_debugmodel_dist_moe_mxfp8_fsdp2_ep2_pp2
+            ],
+            test_descr="GraphPP MXFP8 Dist-MoE activation-slot reuse",
+            test_name="graph_trainer_dist_moe_mxfp8_fsdp_ep_pp",
+            ngpu=4,
+            use_real_pg=True,
+        ),
+    ]
+
+
 def build_graph_trainer_autoparallel_test_list() -> list[IntegrationTestDefinition]:
     """AutoParallel tests for default runners."""
     return _build_autoparallel_tests()
@@ -672,6 +698,7 @@ _TEST_SUITES_FUNCTION = {
     "graph_trainer": build_graph_trainer_test_list,
     "graph_trainer_default": build_graph_trainer_default_test_list,
     "graph_trainer_h100": build_graph_trainer_h100_test_list,
+    "graph_trainer_b200": build_graph_trainer_b200_test_list,
     "graph_trainer_autoparallel": build_graph_trainer_autoparallel_test_list,
     "graph_trainer_autoparallel_h100": build_graph_trainer_autoparallel_h100_test_list,
 }

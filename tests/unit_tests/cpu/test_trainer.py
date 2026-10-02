@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import contextlib
+import subprocess
+import sys
 import weakref
 from functools import partial
 from types import SimpleNamespace
@@ -25,6 +27,41 @@ from torchtitan.observability.metrics import compute_training_performance_metric
 from torchtitan.observability.sdc_replayer import SDCReplayMismatch
 from torchtitan.trainer import Trainer
 from torchtitan.training_engine import ForwardBackwardResult, TrainingEngine
+
+
+def test_common_imports_do_not_require_dist_moe() -> None:
+    """Ordinary engine, GraphTrainer, and recipe imports keep Dist-MoE optional."""
+    script = r"""
+import importlib.abc
+import sys
+
+class BlockDistMoe(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "dist_moe" or fullname.startswith("dist_moe."):
+            raise ModuleNotFoundError("blocked optional import", name=fullname)
+        return None
+
+sys.meta_path.insert(0, BlockDistMoe())
+import torchtitan.config.transform
+import torchtitan.training_engine
+import torchtitan.experiments.graph_trainer.graph_builder
+import torchtitan_recipes.models.deepseek_v3 as recipes
+
+try:
+    recipes.deepseek_v3_671b_dist_moe_bf16(seq_len=128)
+except ModuleNotFoundError as error:
+    assert error.name == "dist_moe"
+    assert "optional dist_moe package" in str(error)
+else:
+    raise AssertionError("Dist-MoE recipe unexpectedly loaded without its package")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _batch() -> TokenizedTrainingMicrobatch:
